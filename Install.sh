@@ -87,7 +87,7 @@ locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
 # 12c. Hostname
-echo "archpc" > /etc/hostname
+echo "bobby" > /etc/hostname
 echo "127.0.0.1   localhost" >> /etc/hosts
 echo "::1         localhost" >> /etc/hosts
 echo "127.0.1.1   archpc.localdomain archpc" >> /etc/hosts
