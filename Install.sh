@@ -77,38 +77,44 @@ genfstab -U /mnt >> /mnt/etc/fstab
 arch-chroot /mnt /bin/bash <<EOF
 set -e
 
-# 12a. Timezone
+# Timezone
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 hwclock --systohc
 
-# 12b. Locale
+# Locale
 echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
 locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
-# 12c. Hostname
-echo "bobby" > /etc/hostname
+# Hostname
+echo "archpc" > /etc/hostname
 echo "127.0.0.1   localhost" >> /etc/hosts
 echo "::1         localhost" >> /etc/hosts
 echo "127.0.1.1   archpc.localdomain archpc" >> /etc/hosts
 
-# 12d. Root password
+# Root password
 echo "root:$ROOT_PASS" | chpasswd
 
-# 12e. Create user
+# Create user
 useradd -m -G wheel -s /bin/bash $USERNAME
 echo "$USERNAME:$USER_PASS" | chpasswd
 sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /etc/sudoers
 
-# 12f. Initramfs
+# Initramfs
 mkinitcpio -P
 
-# 12g. Install GRUB
+# Install GRUB + efibootmgr
 pacman -Sy --noconfirm grub efibootmgr
+
+# === GRUB UUID FIX for LUKS ===
+ROOT_UUID=\$(blkid -s UUID -o value /dev/${DISK}p3)
+echo "GRUB_CMDLINE_LINUX=\"cryptdevice=UUID=\${ROOT_UUID}:cryptroot root=/dev/mapper/cryptroot\"" >> /etc/default/grub
+
+# Install GRUB
 grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
 grub-mkconfig -o /boot/grub/grub.cfg
 
-# 12h. Enable services
+# Enable services
 systemctl enable NetworkManager
 systemctl enable gdm
 systemctl enable syncthing@$USERNAME
