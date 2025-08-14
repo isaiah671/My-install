@@ -26,9 +26,14 @@ if [ "$confirm" != "YES" ]; then
 fi
 
 # 5. Prompt for LUKS passphrase and username
-read -sp "Enter passphrase for LUKS encryption: " LUKS_PASS
+ad -sp "Enter passphrase for LUKS encryption: " LUKS_PASS
+echo
+read -sp "Enter root password: " ROOT_PASS
 echo
 read -p "Enter new username: " USERNAME
+
+# Set the root password using the provided password
+echo "root:$ROOT_PASS" | chpasswd
 
 # 6. Partitioning
 echo "== Partitioning disk =="
@@ -88,9 +93,6 @@ echo "127.0.0.1   localhost" >> /etc/hosts
 echo "::1         localhost" >> /etc/hosts
 echo "127.0.1.1   archpc.localdomain archpc" >> /etc/hosts
 
-# Set root password
-echo "Set root password:"
-passwd
 
 # Create user
 useradd -m -G wheel -s /bin/bash $USERNAME
