@@ -25,14 +25,10 @@ if [ "$confirm" != "YES" ]; then
     exit 1
 fi
 
-# 5. Prompt for passwords and username
+# 5. Prompt for LUKS passphrase and username
 read -sp "Enter passphrase for LUKS encryption: " LUKS_PASS
 echo
-read -sp "Enter root password: " ROOT_PASS
-echo
 read -p "Enter new username: " USERNAME
-read -sp "Enter password for $USERNAME: " USER_PASS
-echo
 
 # 6. Partitioning
 echo "== Partitioning disk =="
@@ -54,19 +50,19 @@ echo -n "$LUKS_PASS" | cryptsetup open /dev/${DISK}p3 cryptroot -
 echo -n "$LUKS_PASS" | cryptsetup luksFormat /dev/${DISK}p4 -
 echo -n "$LUKS_PASS" | cryptsetup open /dev/${DISK}p4 crypthome -
 
-# 8. Format LUKS volumes
-mkfs.btrfs /dev/mapper/cryptroot
-mkfs.btrfs /dev/mapper/crypthome
+# 8. Format LUKS volumes (EXT4)
+mkfs.ext4 /dev/mapper/cryptroot
+mkfs.ext4 /dev/mapper/crypthome
 
 # 9. Mount
 mount /dev/mapper/cryptroot /mnt
 mkdir /mnt/home
 mount /dev/mapper/crypthome /mnt/home
-mkdir /mnt/boot
-mount /dev/${DISK}p1 /mnt/boot
+mkdir -p /mnt/boot/efi
+mount /dev/${DISK}p1 /mnt/boot/efi
 
 # 10. Install base system
-pacstrap /mnt base linux linux-firmware btrfs-progs vim sudo networkmanager \
+pacstrap /mnt base linux linux-firmware vim sudo networkmanager \
     gdm gnome gnome-extra plasma kde-applications xorg \
     intel-ucode firefox keepassxc syncthing git base-devel
 
@@ -92,26 +88,34 @@ echo "127.0.0.1   localhost" >> /etc/hosts
 echo "::1         localhost" >> /etc/hosts
 echo "127.0.1.1   archpc.localdomain archpc" >> /etc/hosts
 
-# Root password
-echo "root:$ROOT_PASS" | chpasswd
+# Set root password
+echo "Set root password:"
+passwd
 
 # Create user
 useradd -m -G wheel -s /bin/bash $USERNAME
-echo "$USERNAME:$USER_PASS" | chpasswd
+echo "Set password for $USERNAME:"
+passwd $USERNAME
 sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /etc/sudoers
 
-# Initramfs
+# Update mkinitcpio hooks for encryption and resume
+HOOKS_LINE=\$(grep '^HOOKS=' /etc/mkinitcpio.conf)
+HOOKS_CLEAN=\$(echo "\$HOOKS_LINE" | sed 's/\\<encrypt\\>//g' | sed 's/\\<resume\\>//g')
+HOOKS_UPDATED=\$(echo "\$HOOKS_CLEAN" | sed 's/\\<block\\>/block encrypt/' | sed 's/\\<filesystems\\>/filesystems resume/')
+sed -i "s/^HOOKS=.*/\$HOOKS_UPDATED/" /etc/mkinitcpio.conf
 mkinitcpio -P
 
 # Install GRUB + efibootmgr
 pacman -Sy --noconfirm grub efibootmgr
 
-# === GRUB UUID FIX for LUKS ===
+# GRUB UUID fix for LUKS + Resume
 ROOT_UUID=\$(blkid -s UUID -o value /dev/${DISK}p3)
-echo "GRUB_CMDLINE_LINUX=\"cryptdevice=UUID=\${ROOT_UUID}:cryptroot root=/dev/mapper/cryptroot\"" >> /etc/default/grub
+SWAP_UUID=\$(blkid -s UUID -o value /dev/${DISK}p2)
+CRYPT_STRING="cryptdevice=UUID=\${ROOT_UUID}:cryptroot root=/dev/mapper/cryptroot resume=UUID=\${SWAP_UUID}"
+sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"\${CRYPT_STRING}\"|" /etc/default/grub
 
 # Install GRUB
-grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
 grub-mkconfig -o /boot/grub/grub.cfg
 
 # Enable services
@@ -122,3 +126,5 @@ systemctl enable syncthing@$USERNAME
 EOF
 
 echo "== Installation complete! Reboot and remove the ISO. =="
+
+
