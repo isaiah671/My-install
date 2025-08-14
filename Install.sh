@@ -20,20 +20,17 @@ lsblk
 read -p "Enter target disk (e.g., nvme0n1): " DISK
 echo "WARNING: /dev/$DISK will be completely erased!"
 read -p "Type YES to continue: " confirm
-if [ "$confirm" != "no" ]; then
-    echo "Aborted."
-    exit 1
+if [ "$confirm" != "YES" ]; then
+  echo "Aborted."
+  exit 1
 fi
 
 # 5. Prompt for LUKS passphrase and username
-ad -sp "Enter passphrase for LUKS encryption: " LUKS_PASS
+read -sp "Enter passphrase for LUKS encryption: " LUKS_PASS
 echo
 read -sp "Enter root password: " ROOT_PASS
 echo
 read -p "Enter new username: " USERNAME
-
-# Set the root password using the provided password
-echo "root:$ROOT_PASS" | chpasswd
 
 # 6. Partitioning
 echo "== Partitioning disk =="
@@ -68,8 +65,8 @@ mount /dev/${DISK}p1 /mnt/boot/efi
 
 # 10. Install base system
 pacstrap /mnt base linux linux-firmware vim sudo networkmanager \
-    gdm gnome gnome-extra plasma kde-applications xorg \
-    intel-ucode firefox keepassxc syncthing git base-devel
+  gdm gnome gnome-extra plasma kde-applications xorg \
+  intel-ucode firefox keepassxc syncthing git base-devel
 
 # 11. Fstab
 genfstab -U /mnt >> /mnt/etc/fstab
@@ -89,15 +86,18 @@ echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
 # Hostname
 echo "archpc" > /etc/hostname
-echo "127.0.0.1   localhost" >> /etc/hosts
-echo "::1         localhost" >> /etc/hosts
-echo "127.0.1.1   archpc.localdomain archpc" >> /etc/hosts
+cat <<HOSTS >> /etc/hosts
+127.0.0.1   localhost
+::1         localhost
+127.0.1.1   archpc.localdomain archpc
+HOSTS
 
+# Set root password
+echo "root:$ROOT_PASS" | chpasswd
 
 # Create user
 useradd -m -G wheel -s /bin/bash $USERNAME
-echo "Set password for $USERNAME:"
-passwd $USERNAME
+echo "$USERNAME:$ROOT_PASS" | chpasswd
 sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /etc/sudoers
 
 # Update mkinitcpio hooks for encryption and resume
@@ -124,9 +124,6 @@ grub-mkconfig -o /boot/grub/grub.cfg
 systemctl enable NetworkManager
 systemctl enable gdm
 systemctl enable syncthing@$USERNAME
-
 EOF
 
 echo "== Installation complete! Reboot and remove the ISO. =="
-
-
