@@ -20,7 +20,7 @@ lsblk
 read -p "Enter target disk (e.g., nvme0n1): " DISK
 echo "WARNING: /dev/$DISK will be completely erased!"
 read -p "Type YES to continue: " confirm
-if [ "$confirm" != "YES" ]; then
+if [ "$confirm" != "no" ]; then
     echo "Aborted."
     exit 1
 fi
