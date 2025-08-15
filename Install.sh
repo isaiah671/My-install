@@ -77,6 +77,10 @@ mount /dev/${DISK}p1 /mnt/boot/efi
 # Get UUIDs now (outside chroot to avoid name mismatch issues)
 ROOT_UUID=$(blkid -s UUID -o value /dev/${DISK}p3)
 SWAP_UUID=$(blkid -s UUID -o value /dev/${DISK}p2)
+CRYPT_STRING="cryptdevice=UUID=$ROOT_UUID:cryptroot root=/dev/mapper/cryptroot resume=UUID=$SWAP_UUID"
+
+# Export variables so chroot can use them
+export ROOT_UUID SWAP_UUID CRYPT_STRING ROOT_PASS USERNAME
 
 # 10. Install base system and essential packages
 pacstrap /mnt base linux linux-firmware vim sudo networkmanager \
@@ -87,7 +91,7 @@ pacstrap /mnt base linux linux-firmware vim sudo networkmanager \
 genfstab -U /mnt >> /mnt/etc/fstab
 
 # 12. Chroot configuration
-arch-chroot /mnt /bin/bash <<EOF
+arch-chroot /mnt /bin/bash <<'EOF'
 set -e
 
 # Timezone
@@ -119,11 +123,10 @@ sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /etc/sudoers
 sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect keyboard keymap consolefont modconf block encrypt filesystems resume)/' /etc/mkinitcpio.conf
 mkinitcpio -P
 
-# Enable GRUB crypto disk support (fixes your error)
+# Enable GRUB crypto disk support (fixes error)
 sed -i 's/^#GRUB_ENABLE_CRYPTODISK=.*/GRUB_ENABLE_CRYPTODISK=y/' /etc/default/grub || echo "GRUB_ENABLE_CRYPTODISK=y" >> /etc/default/grub
 
 # Configure GRUB for encrypted root + resume
-CRYPT_STRING="cryptdevice=UUID=$ROOT_UUID:cryptroot root=/dev/mapper/cryptroot resume=UUID=$SWAP_UUID"
 sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$CRYPT_STRING\"|" /etc/default/grub
 
 # Install GRUB EFI bootloader
