@@ -51,7 +51,7 @@ for m in cryptroot crypthome; do cryptsetup close "$m" 2>/dev/null || true; done
 if [ ! -d /sys/firmware/efi ]; then
   echo "ERROR: Not booted in UEFI mode."; exit 1
 fi
-ping -c 3 archlinux.org >/dev/null || { echo "ERROR: No internet."; exit 1; }
+#ping -c 3 archlinux.org >/dev/null || { echo "ERROR: No internet."; exit 1; }
 timedatectl set-ntp true
 
 ### ===== 2) Pick target disk =====
