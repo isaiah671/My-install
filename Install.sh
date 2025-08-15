@@ -1,155 +1,128 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-echo "== Arch Linux Auto-Installer (Arch first, Windows later) =="
+### ===== Function: Ask for password with confirmation ===== ###
+ask_password() {
+    local pass1 pass2 prompt="$1"
+    while true; do
+        read -s -p "$prompt: " pass1 && echo
+        read -s -p "Confirm $prompt: " pass2 && echo
+        if [[ "$pass1" == "$pass2" && -n "$pass1" ]]; then
+            echo "$pass1"
+            return
+        else
+            echo "Passwords do not match or are empty. Try again."
+        fi
+    done
+}
 
-# 1. Check boot mode
-if [ ! -d /sys/firmware/efi ]; then
-  echo "ERROR: System not booted in UEFI mode!"
-  exit 1
-fi
+### ===== Step 0: Cleanup previous mounts/mappings ===== ###
+echo "[*] Cleaning up old mounts and encrypted devices..."
+swapoff -a || true
+umount -R /mnt 2>/dev/null || true
+cryptsetup close cryptroot 2>/dev/null || true
+cryptsetup close crypthome 2>/dev/null || true
 
-# 2. Check network
-# ping -c 3 archlinux.org || { echo "ERROR: No internet connection."; exit 1; }
-
-# 3. Sync system clock
-timedatectl set-ntp true
-
-# 4. Disk selection and confirmation
+### ===== Step 1: Select disk ===== ###
 lsblk
-read -p "Enter target disk (e.g., nvme0n1): " DISK
-echo "WARNING: /dev/$DISK will be completely erased!"
-echo "NOTE: This installer will set up EFI partition for Arch only."
-echo "When you install Windows later, it may overwrite the bootloader."
-echo "Make sure to backup your EFI partition (/boot/efi) after installation!"
-read -p "Type YES to continue: " confirm
-if [ "$confirm" != "YES" ]; then
-  echo "Aborted."
-  exit 1
-fi
+read -rp "Enter target NVMe device (e.g., nvme0n1): " DISK
+DISK="/dev/$DISK"
 
-# 5. Prompt for LUKS passphrase and username
-read -sp "Enter passphrase for LUKS encryption: " LUKS_PASS
-echo
-read -sp "Enter root password: " ROOT_PASS
-echo
-read -p "Enter new username: " USERNAME
+### ===== Step 2: Ask passwords ===== ###
+ROOT_PASS=$(ask_password "Root encryption password")
+HOME_PASS=$(ask_password "Home encryption password")
+USER_NAME=""
+while [[ -z "$USER_NAME" ]]; do
+    read -rp "Enter username: " USER_NAME
+done
+USER_PASS=$(ask_password "Password for user '$USER_NAME'")
 
-# 6. Partitioning
-echo "== Partitioning disk =="
-parted /dev/$DISK --script mklabel gpt
+### ===== Step 3: Partition ===== ###
+echo "[*] Partitioning disk..."
+sgdisk --zap-all "$DISK"
+parted -s "$DISK" mklabel gpt
+parted -s "$DISK" mkpart EFI fat32 1MiB 512MiB
+parted -s "$DISK" set 1 esp on
+parted -s "$DISK" mkpart cryptroot 512MiB 50%
+parted -s "$DISK" mkpart crypthome 50% 95%
+parted -s "$DISK" mkpart linux-swap 95% 100%
 
-# Create EFI partition (512MiB)
-parted /dev/$DISK --script mkpart ESP fat32 1MiB 513MiB
-parted /dev/$DISK --script set 1 boot on
-
-# Create swap partition (32GiB)
-parted /dev/$DISK --script mkpart primary linux-swap 513MiB 33.5GiB
-
-# Create encrypted root (rest of disk minus home)
-parted /dev/$DISK --script mkpart primary 33.5GiB 65.5GiB
-
-# Create encrypted home (rest of disk)
-parted /dev/$DISK --script mkpart primary 65.5GiB 100%
-
-# 7. Format partitions
-mkfs.fat -F32 /dev/${DISK}p1
-mkswap /dev/${DISK}p2
-swapon /dev/${DISK}p2
-
-# Encrypt root and home (safer passphrase handling)
-cryptsetup luksFormat /dev/${DISK}p3 --key-file <(echo -n "$LUKS_PASS")
-cryptsetup open /dev/${DISK}p3 cryptroot --key-file <(echo -n "$LUKS_PASS")
-cryptsetup luksFormat /dev/${DISK}p4 --key-file <(echo -n "$LUKS_PASS")
-cryptsetup open /dev/${DISK}p4 crypthome --key-file <(echo -n "$LUKS_PASS")
-
-# 8. Format LUKS volumes (EXT4)
+### ===== Step 4: Encryption & formatting ===== ###
+# Root
+echo "[*] Setting up root encryption..."
+echo -n "$ROOT_PASS" | cryptsetup luksFormat "${DISK}p2" -
+echo -n "$ROOT_PASS" | cryptsetup open "${DISK}p2" cryptroot -
 mkfs.ext4 /dev/mapper/cryptroot
+
+# Home
+echo "[*] Setting up home encryption..."
+echo -n "$HOME_PASS" | cryptsetup luksFormat "${DISK}p3" -
+echo -n "$HOME_PASS" | cryptsetup open "${DISK}p3" crypthome -
 mkfs.ext4 /dev/mapper/crypthome
 
-# 9. Mount
+# Swap
+mkswap "${DISK}p4"
+
+# EFI
+mkfs.fat -F32 "${DISK}p1"
+
+### ===== Step 5: Mount ===== ###
 mount /dev/mapper/cryptroot /mnt
-mkdir /mnt/home
+mkdir -p /mnt/home
 mount /dev/mapper/crypthome /mnt/home
-mkdir -p /mnt/boot/efi
-mount /dev/${DISK}p1 /mnt/boot/efi
+mkdir -p /mnt/boot
+mount "${DISK}p1" /mnt/boot
+swapon "${DISK}p4"
 
-# Get UUIDs now (outside chroot to avoid name mismatch issues)
-ROOT_UUID=$(blkid -s UUID -o value /dev/${DISK}p3)
-SWAP_UUID=$(blkid -s UUID -o value /dev/${DISK}p2)
-CRYPT_STRING="cryptdevice=UUID=$ROOT_UUID:cryptroot root=/dev/mapper/cryptroot resume=UUID=$SWAP_UUID"
+### ===== Step 6: Install base system ===== ###
+pacstrap /mnt base linux linux-firmware grub efibootmgr sudo nano vim networkmanager
 
-# Export variables so chroot can use them
-export ROOT_UUID SWAP_UUID CRYPT_STRING ROOT_PASS USERNAME
-
-# 10. Install base system and essential packages
-pacstrap /mnt base linux linux-firmware vim sudo networkmanager \
-  gdm gnome gnome-extra plasma kde-applications xorg \
-  intel-ucode firefox keepassxc syncthing git base-devel grub efibootmgr
-
-# 11. Generate fstab
+### ===== Step 7: Generate fstab ===== ###
 genfstab -U /mnt >> /mnt/etc/fstab
 
-# 12. Chroot configuration
-arch-chroot /mnt /bin/bash <<'EOF'
-set -e
+### ===== Step 8: Configure system ===== ###
+arch-chroot /mnt /bin/bash <<EOF
+set -euo pipefail
 
-# Timezone
+echo "[*] Timezone & clock..."
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 hwclock --systohc
 
-# Locale
+echo "[*] Locale..."
 echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
 locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
 
-# Hostname
-echo "archpc" > /etc/hostname
-cat <<HOSTS >> /etc/hosts
-127.0.0.1   localhost
-::1         localhost
-127.0.1.1   archpc.localdomain archpc
-HOSTS
+echo "[*] Hostname..."
+echo "archlinux" > /etc/hostname
 
-# Set root password
+echo "[*] Set root password..."
 echo "root:$ROOT_PASS" | chpasswd
 
-# Create user
-useradd -m -G wheel -s /bin/bash $USERNAME
-echo "$USERNAME:$ROOT_PASS" | chpasswd
+echo "[*] Create user..."
+useradd -m -G wheel "$USER_NAME"
+echo "$USER_NAME:$USER_PASS" | chpasswd
 sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /etc/sudoers
 
-# Update mkinitcpio hooks for encryption and resume
-sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect keyboard keymap consolefont modconf block encrypt filesystems resume)/' /etc/mkinitcpio.conf
+echo "[*] Configure mkinitcpio..."
+sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf block encrypt filesystems keyboard fsck)/' /etc/mkinitcpio.conf
 mkinitcpio -P
 
-# Enable GRUB crypto disk support (fixes error)
-sed -i 's/^#GRUB_ENABLE_CRYPTODISK=.*/GRUB_ENABLE_CRYPTODISK=y/' /etc/default/grub || echo "GRUB_ENABLE_CRYPTODISK=y" >> /etc/default/grub
+echo "[*] Configure GRUB..."
+ROOT_UUID=\$(blkid -s UUID -o value ${DISK}p2)
+HOME_UUID=\$(blkid -s UUID -o value ${DISK}p3)
+sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"cryptdevice=UUID=\$ROOT_UUID:cryptroot cryptdevice=UUID=\$HOME_UUID:crypthome root=/dev/mapper/cryptroot\"|" /etc/default/grub
+sed -i 's/^#GRUB_ENABLE_CRYPTODISK=.*/GRUB_ENABLE_CRYPTODISK=y/' /etc/default/grub
 
-# Configure GRUB for encrypted root + resume
-sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$CRYPT_STRING\"|" /etc/default/grub
-
-# Install GRUB EFI bootloader
-grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
+grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
 grub-mkconfig -o /boot/grub/grub.cfg
-
-# Backup EFI partition
-tar -czf /root/efi-backup.tar.gz -C /boot efi
-
-# Enable essential services
-systemctl enable NetworkManager
-systemctl enable gdm
-systemctl enable syncthing@$USERNAME
 EOF
 
-echo "== Installation complete! =="
-echo "IMPORTANT:"
-echo "- EFI partition contains Arch bootloader."
-echo "- Backup saved in /root/efi-backup.tar.gz"
-echo "- If Windows overwrites bootloader, restore with:"
-echo "    mount /dev/${DISK}p1 /mnt/boot/efi"
-echo "    arch-chroot /mnt"
-echo "    grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB"
-echo "    grub-mkconfig -o /boot/grub/grub.cfg"
-echo
-echo "Reboot and remove the installation media."
+### ===== Step 9: Final cleanup ===== ###
+echo "[*] Cleaning up..."
+umount -R /mnt
+swapoff -a
+cryptsetup close cryptroot
+cryptsetup close crypthome
+
+echo "[✓] Installation complete!"
