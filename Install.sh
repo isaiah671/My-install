@@ -57,11 +57,11 @@ mkfs.fat -F32 /dev/${DISK}p1
 mkswap /dev/${DISK}p2
 swapon /dev/${DISK}p2
 
-# Encrypt root and home
-echo -n "$LUKS_PASS" | cryptsetup luksFormat /dev/${DISK}p3 -
-echo -n "$LUKS_PASS" | cryptsetup open /dev/${DISK}p3 cryptroot -
-echo -n "$LUKS_PASS" | cryptsetup luksFormat /dev/${DISK}p4 -
-echo -n "$LUKS_PASS" | cryptsetup open /dev/${DISK}p4 crypthome -
+# Encrypt root and home (safer passphrase handling)
+cryptsetup luksFormat /dev/${DISK}p3 --key-file <(echo -n "$LUKS_PASS")
+cryptsetup open /dev/${DISK}p3 cryptroot --key-file <(echo -n "$LUKS_PASS")
+cryptsetup luksFormat /dev/${DISK}p4 --key-file <(echo -n "$LUKS_PASS")
+cryptsetup open /dev/${DISK}p4 crypthome --key-file <(echo -n "$LUKS_PASS")
 
 # 8. Format LUKS volumes (EXT4)
 mkfs.ext4 /dev/mapper/cryptroot
@@ -74,10 +74,14 @@ mount /dev/mapper/crypthome /mnt/home
 mkdir -p /mnt/boot/efi
 mount /dev/${DISK}p1 /mnt/boot/efi
 
+# Get UUIDs now (outside chroot to avoid name mismatch issues)
+ROOT_UUID=$(blkid -s UUID -o value /dev/${DISK}p3)
+SWAP_UUID=$(blkid -s UUID -o value /dev/${DISK}p2)
+
 # 10. Install base system and essential packages
 pacstrap /mnt base linux linux-firmware vim sudo networkmanager \
   gdm gnome gnome-extra plasma kde-applications xorg \
-  intel-ucode firefox keepassxc syncthing git base-devel
+  intel-ucode firefox keepassxc syncthing git base-devel grub efibootmgr
 
 # 11. Generate fstab
 genfstab -U /mnt >> /mnt/etc/fstab
@@ -112,24 +116,22 @@ echo "$USERNAME:$ROOT_PASS" | chpasswd
 sed -i 's/^# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL/' /etc/sudoers
 
 # Update mkinitcpio hooks for encryption and resume
-HOOKS_LINE=\$(grep '^HOOKS=' /etc/mkinitcpio.conf)
-HOOKS_CLEAN=\$(echo "\$HOOKS_LINE" | sed 's/\\<encrypt\\>//g' | sed 's/\\<resume\\>//g')
-HOOKS_UPDATED=\$(echo "\$HOOKS_CLEAN" | sed 's/\\<block\\>/block encrypt/' | sed 's/\\<filesystems\\>/filesystems resume/')
-sed -i "s/^HOOKS=.*/\$HOOKS_UPDATED/" /etc/mkinitcpio.conf
+sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect keyboard keymap consolefont modconf block encrypt filesystems resume)/' /etc/mkinitcpio.conf
 mkinitcpio -P
 
-# Install GRUB and efibootmgr (no os-prober, no Windows detection yet)
-pacman -Sy --noconfirm grub efibootmgr
+# Enable GRUB crypto disk support (fixes your error)
+sed -i 's/^#GRUB_ENABLE_CRYPTODISK=.*/GRUB_ENABLE_CRYPTODISK=y/' /etc/default/grub || echo "GRUB_ENABLE_CRYPTODISK=y" >> /etc/default/grub
 
-# GRUB setup for encrypted root with resume
-ROOT_UUID=\$(blkid -s UUID -o value /dev/${DISK}p3)
-SWAP_UUID=\$(blkid -s UUID -o value /dev/${DISK}p2)
-CRYPT_STRING="cryptdevice=UUID=\${ROOT_UUID}:cryptroot root=/dev/mapper/cryptroot resume=UUID=\${SWAP_UUID}"
-sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"\${CRYPT_STRING}\"|" /etc/default/grub
+# Configure GRUB for encrypted root + resume
+CRYPT_STRING="cryptdevice=UUID=$ROOT_UUID:cryptroot root=/dev/mapper/cryptroot resume=UUID=$SWAP_UUID"
+sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$CRYPT_STRING\"|" /etc/default/grub
 
 # Install GRUB EFI bootloader
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
 grub-mkconfig -o /boot/grub/grub.cfg
+
+# Backup EFI partition
+tar -czf /root/efi-backup.tar.gz -C /boot efi
 
 # Enable essential services
 systemctl enable NetworkManager
@@ -140,12 +142,11 @@ EOF
 echo "== Installation complete! =="
 echo "IMPORTANT:"
 echo "- EFI partition contains Arch bootloader."
-echo "- When installing Windows later, it may overwrite the EFI bootloader."
-echo "- After Windows install, boot Arch live USB and restore GRUB:"
+echo "- Backup saved in /root/efi-backup.tar.gz"
+echo "- If Windows overwrites bootloader, restore with:"
 echo "    mount /dev/${DISK}p1 /mnt/boot/efi"
 echo "    arch-chroot /mnt"
 echo "    grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB"
 echo "    grub-mkconfig -o /boot/grub/grub.cfg"
-echo "- Backup EFI partition now if possible."
 echo
 echo "Reboot and remove the installation media."
