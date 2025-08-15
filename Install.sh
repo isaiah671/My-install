@@ -10,7 +10,7 @@ if [ ! -d /sys/firmware/efi ]; then
 fi
 
 # 2. Check network
-ping -c 3 archlinux.org || { echo "ERROR: No internet connection."; exit 1; }
+# ping -c 3 archlinux.org || { echo "ERROR: No internet connection."; exit 1; }
 
 # 3. Sync system clock
 timedatectl set-ntp true
